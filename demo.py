@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 from torchvision.transforms import Compose, ToTensor, Resize
+from torch.utils.data import Dataset, DataLoader
 
 import numpy as np
 import argparse
@@ -124,6 +125,62 @@ class FgSeparatorManipulator(FrameManipulator):
         def process_bg(self, pha, fgr):
             return nn.functional.interpolate(self.bg, (fgr.shape[2:]))
 
+    class VideoBGProcessor(BGProcessor):
+
+        class VideoDataset(Dataset):
+            def __init__(self, path: str, transforms: any = None):
+                self.cap = cv2.VideoCapture(path)
+                self.transforms = transforms
+
+                self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                self.frame_rate = self.cap.get(cv2.CAP_PROP_FPS)
+                self.frame_count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            def __len__(self):
+                return self.frame_count
+
+            def __getitem__(self, idx):
+                if isinstance(idx, slice):
+                    return [self[i] for i in range(*idx.indices(len(self)))]
+
+                if self.cap.get(cv2.CAP_PROP_POS_FRAMES) != idx:
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, img = self.cap.read()
+                if not ret:
+                    raise IndexError(f'Idx: {idx} out of length: {len(self)}')
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img = Image.fromarray(img)
+                if self.transforms:
+                    img = self.transforms(img)
+                return img
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, exc_traceback):
+                self.cap.release()
+
+        def __init__(self, args):
+            super().__init__(args)
+            if args.target_image is None or not os.path.exists(args.target_image):
+                self.is_valid = False
+                return
+            self.is_valid = True
+            self.target_background_frame = 0
+            self.tb_video = self.VideoDataset(args.target_video, transforms=ToTensor())
+
+        def name(self):
+            return "Video"
+
+        def process_bg(self, pha, fgr):
+            vidframe = self.tb_video[self.target_background_frame].unsqueeze_(0).cuda()
+            tgt_bgr = nn.functional.interpolate(vidframe, (fgr.shape[2:]))
+            self.target_background_frame += 1
+            if self.target_background_frame >= self.tb_video.__len__():
+                self.target_background_frame = 0
+            return tgt_bgr
+
     def grab_background(self):
         print("grabBackground")
         if self.bg_processor is not None:
@@ -155,6 +212,10 @@ class FgSeparatorManipulator(FrameManipulator):
         static_processor = self.StaticBGProcessor(args)
         if static_processor.is_valid:
             self.bg_processors.append(static_processor)
+
+        video_processor = self.VideoBGProcessor(args)
+        if video_processor.is_valid:
+            self.bg_processors.append(video_processor)
 
         bg_options = []
         for bg_processor in self.bg_processors:
