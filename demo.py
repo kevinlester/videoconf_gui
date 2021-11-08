@@ -1,7 +1,9 @@
+import os.path
 from tkinter import *
 from tkinter import ttk
 from dataclasses import dataclass
 import torch
+from torch import nn
 from torchvision.transforms import Compose, ToTensor, Resize
 
 import numpy as np
@@ -57,7 +59,8 @@ class NoopFrameManipulator(FrameManipulator):
 
 class FgSeparatorManipulator(FrameManipulator):
     class BGProcessor:
-        def __init__(self):
+        def __init__(self, args):
+            self.args = args
             self.orig_bg = None
 
         def captured_bg(self, frame):
@@ -68,8 +71,8 @@ class FgSeparatorManipulator(FrameManipulator):
         def name(self): pass
 
     class BlurBGProcessor(BGProcessor):
-        def __init__(self):
-            super().__init__()
+        def __init__(self, args):
+            super().__init__(args)
             self.bg = None
 
         def name(self):
@@ -85,8 +88,8 @@ class FgSeparatorManipulator(FrameManipulator):
             return self.bg
 
     class WhiteBGProcessor(BGProcessor):
-        def __init__(self):
-            super().__init__()
+        def __init__(self, args):
+            super().__init__(args)
             self.bg = None
 
         def name(self):
@@ -94,6 +97,32 @@ class FgSeparatorManipulator(FrameManipulator):
 
         def process_bg(self, pha, fgr):
             return torch.ones_like(fgr)
+
+    class OrigBGProcessor(BGProcessor):
+        def name(self):
+            return "Original"
+
+        def captured_bg(self, frame):
+            self.orig_bg = cv2_frame_to_cuda(frame)
+
+        def process_bg(self, pha, fgr):
+            return self.orig_bg
+
+    class StaticBGProcessor(BGProcessor):
+        def __init__(self, args):
+            super().__init__(args)
+            if args.target_image is None or not os.path.exists(args.target_image):
+                self.is_valid = False
+                return
+            self.is_valid = True
+            frame = cv2.cvtColor(cv2.imread(args.target_image), cv2.COLOR_BGR2RGB)
+            self.bg = cv2_frame_to_cuda(frame)
+
+        def name(self):
+            return "Static Image"
+
+        def process_bg(self, pha, fgr):
+            return nn.functional.interpolate(self.bg, (fgr.shape[2:]))
 
     def grab_background(self):
         print("grabBackground")
@@ -110,7 +139,7 @@ class FgSeparatorManipulator(FrameManipulator):
     def bg_processor_changed(self, event_object):
         self.bg_processor = self.bg_processors[self.bg_combobox.current()]
 
-    def __init__(self, labelframe):
+    def __init__(self, labelframe, args):
         super().__init__(labelframe)
         self.state = 'background'
         self.bgr_frame = None
@@ -118,9 +147,15 @@ class FgSeparatorManipulator(FrameManipulator):
                                 args.model_refine_sample_pixels, args.model_refine_threshold)
         self.bg_processor = None
         self.bg_processors = [
-            self.BlurBGProcessor(),
-            self.WhiteBGProcessor()
+            self.BlurBGProcessor(args),
+            self.WhiteBGProcessor(args),
+            self.StaticBGProcessor(args),
+            self.OrigBGProcessor(args)
         ]
+        static_processor = self.StaticBGProcessor(args)
+        if static_processor.is_valid:
+            self.bg_processors.append(static_processor)
+
         bg_options = []
         for bg_processor in self.bg_processors:
             bg_options.append(bg_processor.name())
@@ -260,7 +295,7 @@ def load_args():
 
 def set_manipupator():
     global frame_manipulator
-    frame_manipulator = FgSeparatorManipulator(option_frame)
+    frame_manipulator = FgSeparatorManipulator(option_frame, args)
     frame_manipulator.activate()
 
 
