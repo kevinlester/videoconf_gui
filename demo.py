@@ -50,7 +50,7 @@ class FrameManipulator:
     def process_frame(self, frame): pass
 
 
-class NoopFrameManipulator(FrameManipulator):
+class  NoopFrameManipulator(FrameManipulator):
     def name(self):
         return "noop"
 
@@ -60,8 +60,9 @@ class NoopFrameManipulator(FrameManipulator):
 
 class FgSeparatorManipulator(FrameManipulator):
     class BGProcessor:
-        def __init__(self, args):
+        def __init__(self, args, label_frame):
             self.args = args
+            self.label_frame = label_frame
             self.orig_bg = None
 
         def captured_bg(self, frame):
@@ -72,8 +73,8 @@ class FgSeparatorManipulator(FrameManipulator):
         def name(self): pass
 
     class BlurBGProcessor(BGProcessor):
-        def __init__(self, args):
-            super().__init__(args)
+        def __init__(self, args, label_frame):
+            super().__init__(args, label_frame)
             self.bg = None
 
         def name(self):
@@ -89,8 +90,8 @@ class FgSeparatorManipulator(FrameManipulator):
             return self.bg
 
     class WhiteBGProcessor(BGProcessor):
-        def __init__(self, args):
-            super().__init__(args)
+        def __init__(self, args, label_frame):
+            super().__init__(args, label_frame)
             self.bg = None
 
         def name(self):
@@ -110,8 +111,8 @@ class FgSeparatorManipulator(FrameManipulator):
             return self.orig_bg
 
     class StaticBGProcessor(BGProcessor):
-        def __init__(self, args):
-            super().__init__(args)
+        def __init__(self, args, label_frame):
+            super().__init__(args, label_frame)
             if args.target_image is None or not os.path.exists(args.target_image):
                 self.is_valid = False
                 return
@@ -161,8 +162,8 @@ class FgSeparatorManipulator(FrameManipulator):
             def __exit__(self, exc_type, exc_value, exc_traceback):
                 self.cap.release()
 
-        def __init__(self, args):
-            super().__init__(args)
+        def __init__(self, args, label_frame):
+            super().__init__(args, label_frame)
             if args.target_image is None or not os.path.exists(args.target_image):
                 self.is_valid = False
                 return
@@ -180,6 +181,95 @@ class FgSeparatorManipulator(FrameManipulator):
             if self.target_background_frame >= self.tb_video.__len__():
                 self.target_background_frame = 0
             return tgt_bgr
+
+    class FGProcessor:
+        def __init__(self, args, label_frame):
+            self.args = args
+            self.label_frame = label_frame
+            chkValue = BooleanVar()
+            chkValue.set(False)
+            self.chk_button = Checkbutton(self.label_frame,
+                                          text=self.name(),
+                                          var=chkValue)
+            self.chk_button.pack()
+            self.chkValue = chkValue
+
+        def name(self): pass
+        def is_enabled(self): return self.chkValue.get()
+        def process_fg(self, pha, fgr): pass
+
+    class GhostFGProcessor(FGProcessor):
+        def __init__(self, args, label_frame):
+            super().__init__(args, label_frame)
+            self.scale_control = Scale(label_frame, from_=0, to=10, orient=HORIZONTAL, tickinterval=1, length=250)
+            self.scale_control.set(5)
+            self.scale_control.pack()
+
+        def name(self):
+            return "Ghost"
+
+        def process_fg(self, pha, fgr):
+            pha[0,0,:,:] *= self.scale_control.get() / 10.0
+            return pha, fgr
+
+    class HologramFGProcessor(FGProcessor):
+        def __init__(self, args, label_frame):
+            super().__init__(args, label_frame)
+            self.band_length_scale = Scale(label_frame, from_=0, to=20, orient=HORIZONTAL, tickinterval=1, length=250)
+            self.band_length_scale.set(2)
+            self.band_length_scale.pack()
+
+            self.band_gap_scale = Scale(label_frame, from_=0, to=20, orient=HORIZONTAL, tickinterval=1, length=250)
+            self.band_gap_scale.set(3)
+            self.band_gap_scale.pack()
+
+
+        def process_fg(self, pha, fgr):
+            return pha, self.frame_to_hologram(pha, fgr)
+
+        def name(self):
+            return "Hologram"
+
+        def frame_to_hologram(self, pha, fgr):
+            mask = pha * fgr
+            mask_img = mask.mul(255).byte().cpu().permute(0, 2, 3, 1).numpy()[0]
+            mask_img = cv2.cvtColor(mask_img, cv2.COLOR_RGB2BGR)
+            mask_img = self.hologram_effect(mask_img)
+            mask_img = cv2.cvtColor(mask_img, cv2.COLOR_BGR2RGB)
+            return cv2_frame_to_cuda(mask_img)
+
+        def hologram_effect(self, img):
+            # add a blue tint
+            holo = cv2.applyColorMap(img, cv2.COLORMAP_WINTER)
+            # add a halftone effect
+            # band_length, band_gap = 2, 3
+            band_length, band_gap = self.band_length_scale.get(), self.band_gap_scale.get()
+
+            for y in range(holo.shape[0]):
+                if y % (band_length + band_gap) < band_length:
+                    holo[y, :, :] = holo[y, :, :] * np.random.uniform(0.1, 0.3)
+
+            # add some ghosting
+            holo_blur = cv2.addWeighted(holo, 0.2, self.shift_image(holo.copy(), 5, 5), 0.8, 0)
+            holo_blur = cv2.addWeighted(holo_blur, 0.4, self.shift_image(holo.copy(), -5, -5), 0.6, 0)
+
+            # combine with the original color, oversaturated
+            out = cv2.addWeighted(img, 0.5, holo_blur, 0.6, 0)
+            return out
+
+        def shift_image(self, img, dx, dy):
+            img = np.roll(img, dy, axis=0)
+            img = np.roll(img, dx, axis=1)
+            if dy > 0:
+                img[:dy, :] = 0
+            elif dy < 0:
+                img[dy:, :] = 0
+            if dx > 0:
+                img[:, :dx] = 0
+            elif dx < 0:
+                img[:, dx:] = 0
+            return img
+
 
     def grab_background(self):
         print("grabBackground")
@@ -204,16 +294,16 @@ class FgSeparatorManipulator(FrameManipulator):
                                 args.model_refine_sample_pixels, args.model_refine_threshold)
         self.bg_processor = None
         self.bg_processors = [
-            self.BlurBGProcessor(args),
-            self.WhiteBGProcessor(args),
-            self.StaticBGProcessor(args),
-            self.OrigBGProcessor(args)
+            self.BlurBGProcessor(args, labelframe),
+            self.WhiteBGProcessor(args, labelframe),
+            self.StaticBGProcessor(args, labelframe),
+            self.OrigBGProcessor(args, labelframe)
         ]
-        static_processor = self.StaticBGProcessor(args)
+        static_processor = self.StaticBGProcessor(args, labelframe)
         if static_processor.is_valid:
             self.bg_processors.append(static_processor)
 
-        video_processor = self.VideoBGProcessor(args)
+        video_processor = self.VideoBGProcessor(args, labelframe)
         if video_processor.is_valid:
             self.bg_processors.append(video_processor)
 
@@ -230,6 +320,11 @@ class FgSeparatorManipulator(FrameManipulator):
         self.background_btn = Button(self.labelframe, text="Grab Background", command=self.grab_background, width="250")
         self.background_btn.pack()
 
+        self.fg_processors = [
+            self.GhostFGProcessor(args, self.labelframe),
+            self.HologramFGProcessor(args, self.labelframe)
+        ]
+
     def name(self):
         return "Foreground Separator"
 
@@ -238,13 +333,17 @@ class FgSeparatorManipulator(FrameManipulator):
         self.bgmModel.reload()
 
     def process_frame(self, frame):
-        if self.bg_processor is None:
+        if self.bgr_frame is None:
             return frame
 
         cuda_frame = cv2_frame_to_cuda(frame)
         pha, fgr = self.bgmModel.model(cuda_frame, self.bgr_frame)[:2]
 
         tgt_bgr = self.bg_processor.process_bg(pha, fgr)
+
+        for fg_processor in self.fg_processors:
+            if fg_processor.is_enabled():
+                pha, fgr = fg_processor.process_fg(pha, fgr)
 
         res = pha * fgr + (1 - pha) * tgt_bgr
         res = res.mul(255).byte().cpu().permute(0, 2, 3, 1).numpy()[0]
@@ -311,9 +410,11 @@ def show_frames():
     # Get the latest frame and convert into Image
     frame = camera.read()
 
+    # send the image through the manipulator
     cv2image = frame_manipulator.process_frame(frame)
+
+    # Convert frame to PhotoImage for display
     img = Image.fromarray(cv2image)
-    # Convert image to PhotoImage
     imgtk = ImageTk.PhotoImage(image=img)
     img_label.imgtk = imgtk
     img_label.configure(image=imgtk)
@@ -325,6 +426,7 @@ def show_frames():
 
     fps_tracker.tick()
     fps_label.configure(text=fps_tracker.get())
+
     # Repeat after an interval to capture continuously
     img_label.after(1, show_frames)
 
@@ -354,7 +456,7 @@ def load_args():
     return parser.parse_args()
 
 
-def set_manipupator():
+def set_manipulator():
     global frame_manipulator
     frame_manipulator = FgSeparatorManipulator(option_frame, args)
     frame_manipulator.activate()
@@ -380,7 +482,7 @@ if __name__ == '__main__':
     f2 = ttk.Labelframe(p, text='Pane2', width=250, height=100)
     fps_label = Label(f2, text='0')
     fps_label.pack()
-    manipulator_btn = Button(f2, text="Foreground Manipulator", command=set_manipupator)
+    manipulator_btn = Button(f2, text="Foreground Manipulator", command=set_manipulator)
     manipulator_btn.pack()
     option_frame = ttk.Labelframe(f2, text='Options', width=250, height=100)
     option_frame.pack()
