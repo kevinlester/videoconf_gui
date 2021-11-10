@@ -202,7 +202,7 @@ class FgSeparatorManipulator(FrameManipulator):
         def __init__(self, args, label_frame):
             super().__init__(args, label_frame)
             self.scale_control = Scale(label_frame, from_=0, to=10, orient=HORIZONTAL, tickinterval=1, length=250)
-            self.scale_control.set(5)
+            self.scale_control.set(10)
             self.scale_control.pack()
 
         def name(self):
