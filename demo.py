@@ -1,18 +1,18 @@
+import argparse
 import os.path
+import time
+from dataclasses import dataclass
+from threading import Thread, Lock
 from tkinter import *
 from tkinter import ttk
-from dataclasses import dataclass
-import torch
-from torch import nn
-from torchvision.transforms import Compose, ToTensor, Resize
-from torch.utils.data import Dataset, DataLoader
 
-import numpy as np
-import argparse
 import cv2
-import time
-from threading import Thread, Lock
+import numpy as np
+import torch
 from PIL import Image, ImageTk
+from torch import nn
+from torch.utils.data import Dataset
+from torchvision.transforms import ToTensor
 
 camera = -1
 img_label = -1
@@ -42,20 +42,21 @@ class BGModel:
 
 
 class FrameManipulator:
-    def __init__(self, labelframe):
+    def __init__(self, camera, labelframe):
+        self.camera = camera
         self.labelframe = labelframe
 
     def name(self): pass
     def activate(self): pass
-    def process_frame(self, frame): pass
+    def read_frame(self): pass
 
 
-class  NoopFrameManipulator(FrameManipulator):
+class NoopFrameManipulator(FrameManipulator):
     def name(self):
         return "noop"
 
-    def process_frame(self, frame):
-        return frame
+    def read_frame(self):
+        return self.camera.read()
 
 
 class FgSeparatorManipulator(FrameManipulator):
@@ -215,11 +216,11 @@ class FgSeparatorManipulator(FrameManipulator):
     class HologramFGProcessor(FGProcessor):
         def __init__(self, args, label_frame):
             super().__init__(args, label_frame)
-            self.band_length_scale = Scale(label_frame, from_=0, to=20, orient=HORIZONTAL, tickinterval=1, length=250)
+            self.band_length_scale = Scale(label_frame, from_=1, to=20, orient=HORIZONTAL, tickinterval=1, length=250)
             self.band_length_scale.set(2)
             self.band_length_scale.pack()
 
-            self.band_gap_scale = Scale(label_frame, from_=0, to=20, orient=HORIZONTAL, tickinterval=1, length=250)
+            self.band_gap_scale = Scale(label_frame, from_=1, to=20, orient=HORIZONTAL, tickinterval=1, length=250)
             self.band_gap_scale.set(3)
             self.band_gap_scale.pack()
 
@@ -270,9 +271,7 @@ class FgSeparatorManipulator(FrameManipulator):
                 img[:, dx:] = 0
             return img
 
-
     def grab_background(self):
-        print("grabBackground")
         if self.bg_processor is not None:
             self.bg_processor = None
             return
@@ -286,8 +285,14 @@ class FgSeparatorManipulator(FrameManipulator):
     def bg_processor_changed(self, event_object):
         self.bg_processor = self.bg_processors[self.bg_combobox.current()]
 
-    def __init__(self, labelframe, args):
-        super().__init__(labelframe)
+    def __init__(self, camera, labelframe, args):
+        super().__init__(camera, labelframe)
+        self.thread = None
+        self.read_lock = Lock()
+        self.thread = None
+        self.current_frame = None
+        self.is_active = False
+
         self.state = 'background'
         self.bgr_frame = None
         self.bgmModel = BGModel(args.model_checkpoint, args.model_backbone_scale, args.model_refine_mode,
@@ -331,6 +336,16 @@ class FgSeparatorManipulator(FrameManipulator):
     def activate(self):
         print("activating")
         self.bgmModel.reload()
+        self.thread = Thread(target=self.process_frames, args=())
+        self.thread.daemon = True
+        self.thread.start()
+
+    def process_frames(self):
+        while True:
+            frame = self.camera.read()
+            frame = self.process_frame(frame)
+            with self.read_lock:
+                self.current_frame = frame
 
     def process_frame(self, frame):
         if self.bgr_frame is None:
@@ -348,6 +363,11 @@ class FgSeparatorManipulator(FrameManipulator):
         res = pha * fgr + (1 - pha) * tgt_bgr
         res = res.mul(255).byte().cpu().permute(0, 2, 3, 1).numpy()[0]
         return res
+
+    def read_frame(self):
+        with self.read_lock:
+            frame = self.current_frame.copy()
+        return frame
 
 
 # A wrapper that reads data from cv2.VideoCapture in its own thread to optimize.
@@ -408,10 +428,12 @@ class FPSTracker:
 
 def show_frames():
     # Get the latest frame and convert into Image
-    frame = camera.read()
+    # frame = camera.read()
+
+    cv2image = frame_manipulator.read_frame()
 
     # send the image through the manipulator
-    cv2image = frame_manipulator.process_frame(frame)
+    # cv2image = frame_manipulator.process_frame(frame)
 
     # Convert frame to PhotoImage for display
     img = Image.fromarray(cv2image)
@@ -458,8 +480,9 @@ def load_args():
 
 def set_manipulator():
     global frame_manipulator
-    frame_manipulator = FgSeparatorManipulator(option_frame, args)
+    frame_manipulator = FgSeparatorManipulator(camera, option_frame, args)
     frame_manipulator.activate()
+    time.sleep(1)
 
 
 if __name__ == '__main__':
@@ -487,7 +510,7 @@ if __name__ == '__main__':
     option_frame = ttk.Labelframe(f2, text='Options', width=250, height=100)
     option_frame.pack()
 
-    frame_manipulator = NoopFrameManipulator(option_frame)
+    frame_manipulator = NoopFrameManipulator(camera, option_frame)
     frame_manipulator.activate()
 
     p.add(f1)
