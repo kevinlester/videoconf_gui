@@ -45,6 +45,7 @@ class FrameManipulator:
     def __init__(self, camera, labelframe):
         self.camera = camera
         self.labelframe = labelframe
+        self.fps_tracker = FPSTracker()
 
     def name(self): pass
     def activate(self): pass
@@ -56,7 +57,9 @@ class NoopFrameManipulator(FrameManipulator):
         return "noop"
 
     def read_frame(self):
-        return self.camera.read()
+        frame = self.camera.read()
+        self.fps_tracker.tick()
+        return frame, self.fps_tracker.get()
 
 
 class FgSeparatorManipulator(FrameManipulator):
@@ -345,6 +348,7 @@ class FgSeparatorManipulator(FrameManipulator):
             frame = self.camera.read()
             frame = self.process_frame(frame)
             with self.read_lock:
+                self.fps_tracker.tick()
                 self.current_frame = frame
 
     def process_frame(self, frame):
@@ -366,7 +370,7 @@ class FgSeparatorManipulator(FrameManipulator):
 
     def read_frame(self):
         with self.read_lock:
-            frame = self.current_frame.copy()
+            frame = self.current_frame.copy(), self.fps_tracker.get()
         return frame
 
 
@@ -430,7 +434,7 @@ def show_frames():
     # Get the latest frame and convert into Image
     # frame = camera.read()
 
-    cv2image = frame_manipulator.read_frame()
+    cv2image, manipulator_rate = frame_manipulator.read_frame()
 
     # send the image through the manipulator
     # cv2image = frame_manipulator.process_frame(frame)
@@ -447,7 +451,9 @@ def show_frames():
     #     self.webcam.schedule_frame(image_web)
 
     fps_tracker.tick()
-    fps_label.configure(text=fps_tracker.get())
+    display_fps = fps_tracker.get() or 0
+    manipulator_rate = manipulator_rate or 0
+    fps_label.configure(text=f'{display_fps:.2f} {manipulator_rate:.2f}')
 
     # Repeat after an interval to capture continuously
     img_label.after(1, show_frames)
