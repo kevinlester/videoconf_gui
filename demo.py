@@ -45,7 +45,7 @@ class FrameManipulator:
     def __init__(self, camera, labelframe):
         self.camera = camera
         self.labelframe = labelframe
-        self.fps_tracker = FPSTracker()
+        self.fps_tracker = FPSTracker(ratio=0.05)
 
     def name(self): pass
     def activate(self): pass
@@ -499,7 +499,7 @@ if __name__ == '__main__':
     source_device_id = 0
 
     camera = Camera(device_id=args.source_device_id, width=width, height=height)
-    fps_tracker = FPSTracker()
+    fps_tracker = FPSTracker(ratio=0.05)
 
     p = ttk.Panedwindow(orient=HORIZONTAL)
     p.pack(fill=BOTH, expand=1)
