@@ -1,6 +1,7 @@
 import argparse
 import os.path
 import time
+from collections import deque
 from dataclasses import dataclass
 from threading import Thread, Lock
 from tkinter import *
@@ -294,6 +295,7 @@ class FgSeparatorManipulator(FrameManipulator):
         self.read_lock = Lock()
         self.thread = None
         self.current_frame = None
+        self.current_fps = 0
         self.is_active = False
 
         self.state = 'background'
@@ -348,7 +350,7 @@ class FgSeparatorManipulator(FrameManipulator):
             frame = self.camera.read()
             frame = self.process_frame(frame)
             with self.read_lock:
-                self.fps_tracker.tick()
+                self.current_fps = self.fps_tracker.tick()
                 self.current_frame = frame
 
     def process_frame(self, frame):
@@ -369,9 +371,10 @@ class FgSeparatorManipulator(FrameManipulator):
         return res
 
     def read_frame(self):
+        # BUG!  Need to store the fps and framerate locally for a correct framarate
         with self.read_lock:
-            frame = self.current_frame.copy(), self.fps_tracker.get()
-        return frame
+            frame, fps = self.current_frame.copy(), self.current_fps
+        return frame, fps
 
 
 # A wrapper that reads data from cv2.VideoCapture in its own thread to optimize.
@@ -391,18 +394,29 @@ class Camera:
         self.thread = Thread(target=self.__update, args=())
         self.thread.daemon = True
         self.thread.start()
+        self.deque = deque(maxlen=2)
+        self.last_frame = None
 
     def __update(self):
         while self.success_reading:
             grabbed, frame = self.capture.read()
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            with self.read_lock:
-                self.success_reading = grabbed
-                self.frame = frame
+            # with self.read_lock:
+            #     self.success_reading = grabbed
+            #     self.frame = frame
+            self.deque.append(frame)
 
     def read(self):
-        with self.read_lock:
-            frame = self.frame.copy()
+        # with self.read_lock:
+        #     frame = self.frame.copy()
+        # return frame
+        try:
+            frame = self.deque.popleft()
+            frame = frame.copy()
+            self.last_frame = frame
+        except IndexError:
+            print("Empty queue")
+            frame = self.last_frame
         return frame
 
     def __exit__(self, exec_type, exc_value, traceback):
@@ -435,11 +449,16 @@ def show_frames():
     # frame = camera.read()
 
     cv2image, manipulator_rate = frame_manipulator.read_frame()
+    if cv2image is None:
+        print("No frame")
+        img_label.after(1, show_frames)
+        return
 
     # send the image through the manipulator
     # cv2image = frame_manipulator.process_frame(frame)
 
     # Convert frame to PhotoImage for display
+    # can try imgtk.paste to see if that is faster
     img = Image.fromarray(cv2image)
     imgtk = ImageTk.PhotoImage(image=img)
     img_label.imgtk = imgtk
