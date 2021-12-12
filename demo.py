@@ -473,8 +473,8 @@ class FgSeparatorManipulator(FrameManipulator):
             self.__start_listener()
 
             conn = self.conn
-            # TODO - remove this by reading the first frame from the camera.
-            time.sleep(1)
+            self.camera.read_blocked()
+            # time.sleep(1)
             while True:
                 with self.lock:
                     if self.msg_present:
@@ -658,10 +658,17 @@ class Camera:
     def read(self):
         if self.deque:
             frame = self.deque.popleft()
-            #frame = frame.copy()
+            # frame = frame.copy()
             self.last_frame = frame
         else:
             frame = self.last_frame
+        return frame
+
+    def read_blocked(self):
+        frame = self.read()
+        while frame is None:
+            time.sleep(.1)
+            frame = self.read()
         return frame
 
     def __exit__(self, exec_type, exc_value, traceback):
@@ -702,7 +709,7 @@ def show_frames():
 
     cv2image, manipulator_rate = frame_manipulator.read_frame()
     if cv2image is None:
-        #print("No frame")
+        # print("No frame")
         img_label.after(1, show_frames)
         return
 
@@ -760,10 +767,11 @@ def set_manipulator():
     frame_manipulator = FgSeparatorManipulator(camera, option_frame, args)
     frame_manipulator.activate()
 
+
 def close_window():
     print("User requested close at:", time.time())
     print("Destroying GUI at:", time.time())
-    try: # "destroy()" can throw, so you should wrap it like this.
+    try:  # "destroy()" can throw, so you should wrap it like this.
         root.destroy()
     except:
         pass
@@ -801,7 +809,7 @@ if __name__ == '__main__':
 
     p.add(f1)
     p.add(f2)
-    # TODO - remove this by reading the first frame from the camera.
-    time.sleep(1)
+    camera.read_blocked()
+    # time.sleep(1)
     show_frames()
     root.mainloop()
